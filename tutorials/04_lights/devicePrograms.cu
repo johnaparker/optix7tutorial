@@ -108,6 +108,7 @@ namespace optix7tutorial {
 
 
 extern "C" __global__ void __intersection__is() {
+    printf("intersection\n");
     auto* hg_data  = reinterpret_cast<HitGroupData*>( optixGetSbtDataPointer() );
     const float3 orig = optixGetObjectRayOrigin();
     const float3 dir  = optixGetObjectRayDirection();
@@ -142,10 +143,17 @@ extern "C" __global__ void __intersection__is() {
     }
 }
 
-extern "C" __global__ void __closesthit__radiance() {
-    const int primID = optixGetPrimitiveIndex();
+extern "C" __global__ void __closesthit__sphere() {
     float3 &prd = *getPRD<float3>();
     float3 &att = *getARD<float3>();
     prd = normalize( optixTransformNormalFromObjectToWorldSpace( att ) ) * 0.5f + 0.5f;
 }
+
+extern "C" __global__ void __closesthit__triangle() {
+    float3 &prd = *getPRD<float3>();
+    prd = make_float3(0.f);
+    float2 coords = optixGetTriangleBarycentrics();
+    prd = make_float3(coords.x, coords.y, 1 - coords.x - coords.y);
+}
+
 }

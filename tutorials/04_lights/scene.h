@@ -73,7 +73,10 @@ namespace optix7tutorial {
     void createSBT();
 
     /*! build an acceleration structure for the given triangle mesh */
-    OptixTraversableHandle buildAccel();
+    OptixTraversableHandle buildIAS();
+    OptixTraversableHandle buildGAS(OptixBuildInput& build_input);
+    void buildSphereGAS();
+    void buildTriangleGAS();
 
   protected:
     /*! @{ CUDA device context and stream that optix pipeline will run
@@ -123,6 +126,13 @@ namespace optix7tutorial {
 
     /*! the model we are going to trace rays against */
     cuBuffer aabbBuffer;
+
+    /*! the model we are going to trace rays against */
+    cuBuffer vertexBuffer;
+    cuBuffer indexBuffer;
+
+    OptixTraversableHandle sphere_gas;
+    OptixTraversableHandle triangle_gas;
   };
 
 }

@@ -1,6 +1,7 @@
 #include "scene.h"
 // this include may only appear in a single source file:
 #include <optix_function_table_definition.h>
+#include <cstring>
 
 namespace optix7tutorial {
 
@@ -25,7 +26,11 @@ namespace optix7tutorial {
     createRaygenPrograms();
     createMissPrograms();
     createHitGroupPrograms();
-    launchParams.traversable = buildAccel();
+
+    buildSphereGAS();
+    buildTriangleGAS();
+    launchParams.traversable = buildIAS();
+
     createPipeline();
     createSBT();
 
@@ -75,7 +80,7 @@ namespace optix7tutorial {
     moduleCompileOptions.debugLevel        = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
 
     pipelineCompileOptions = {};
-    pipelineCompileOptions.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
+    pipelineCompileOptions.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_ANY;
     pipelineCompileOptions.usesMotionBlur     = false;
     pipelineCompileOptions.numPayloadValues   = 2;
     pipelineCompileOptions.numAttributeValues = 2;
@@ -148,14 +153,14 @@ namespace optix7tutorial {
     
   /*! does all setup for the hitgroup program(s) we are going to use */
   void Scene::createHitGroupPrograms() {
-    // for this simple example, we set up a single hit group
-    hitgroupPGs.resize(1);
+    hitgroupPGs.resize(2);
       
+    {
     OptixProgramGroupOptions pgOptions = {};
     OptixProgramGroupDesc pgDesc    = {};
     pgDesc.kind                     = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
     pgDesc.hitgroup.moduleCH            = module;           
-    pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__radiance";
+    pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__sphere";
     pgDesc.hitgroup.moduleAH            = module;           
     pgDesc.hitgroup.entryFunctionNameAH = "__anyhit__radiance";
     pgDesc.hitgroup.moduleIS            = module;
@@ -170,6 +175,27 @@ namespace optix7tutorial {
                                         log,&sizeof_log,
                                         &hitgroupPGs[0]
                                         ));
+    }
+
+    {
+    OptixProgramGroupOptions pgOptions = {};
+    OptixProgramGroupDesc pgDesc    = {};
+    pgDesc.kind                     = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    pgDesc.hitgroup.moduleCH            = module;           
+    pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__triangle";
+    pgDesc.hitgroup.moduleAH            = module;           
+    pgDesc.hitgroup.entryFunctionNameAH = "__anyhit__radiance";
+
+    char log[2048];
+    size_t sizeof_log = sizeof( log );
+    OPTIX_CHECK(optixProgramGroupCreate(optixContext,
+                                        &pgDesc,
+                                        1,
+                                        &pgOptions,
+                                        log,&sizeof_log,
+                                        &hitgroupPGs[1]
+                                        ));
+    }
   }
     
 
@@ -243,34 +269,76 @@ namespace optix7tutorial {
     // build hitgroup records
     // ------------------------------------------------------------------
 
-    // we don't actually have any objects in this example, but let's
-    // create a dummy one so the SBT doesn't have any null pointers
-    // (which the sanity checks in compilation would complain about)
-    int numObjects = 1;
     std::vector<HitGroupSbtRecord> hitgroupRecords;
-    for (int i=0;i<numObjects;i++) {
-      int objectType = 0;
+    {
       HitGroupSbtRecord rec;
       rec.data.radius = 1.5f;
-      OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[objectType],&rec));
+      OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[0],&rec));
       hitgroupRecords.push_back(rec);
     }
+    {
+      HitGroupSbtRecord rec;
+      rec.data.radius = 1.5f;
+      OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[1],&rec));
+      hitgroupRecords.push_back(rec);
+    }
+
     hitgroupRecordsBuffer.alloc_and_copy_to_device(hitgroupRecords);
     sbt.hitgroupRecordBase          = hitgroupRecordsBuffer.d_pointer();
     sbt.hitgroupRecordStrideInBytes = sizeof(HitGroupSbtRecord);
-    sbt.hitgroupRecordCount         = 1;
-
-
+    sbt.hitgroupRecordCount         = hitgroupRecords.size();
   }
 
-  OptixTraversableHandle Scene::buildAccel() {
-    OptixTraversableHandle asHandle {0};
+  void Scene::buildTriangleGAS() {
+    // ==================================================================
+    // triangle inputs
+    // ==================================================================
+    std::vector<float3> vertices;
+    std::vector<int3> indices;
+    vertices.push_back(make_float3(-1,0,-2));
+    vertices.push_back(make_float3(1, 0,-2));
+    vertices.push_back(make_float3(0, 2,-2));
+    indices.push_back(make_int3(0,1,2));
 
-    OptixAccelBuildOptions accel_options = {};
-    accel_options.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
-    accel_options.operation  = OPTIX_BUILD_OPERATION_BUILD;
+    vertexBuffer.alloc_and_copy_to_device(vertices);
+    indexBuffer.alloc_and_copy_to_device(indices);
     
-    // AABB build input
+    OptixBuildInput triangleInput = {};
+    triangleInput.type
+      = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
+
+    // create local variables, because we need a *pointer* to the
+    // device pointers
+    CUdeviceptr d_vertices = vertexBuffer.d_pointer();
+    CUdeviceptr d_indices  = indexBuffer.d_pointer();
+      
+    triangleInput.triangleArray.vertexFormat        = OPTIX_VERTEX_FORMAT_FLOAT3;
+    triangleInput.triangleArray.vertexStrideInBytes = sizeof(float3);
+    triangleInput.triangleArray.numVertices         = (int)vertices.size();
+    triangleInput.triangleArray.vertexBuffers       = &d_vertices;
+    
+    triangleInput.triangleArray.indexFormat         = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
+    triangleInput.triangleArray.indexStrideInBytes  = sizeof(int3);
+    triangleInput.triangleArray.numIndexTriplets    = (int)indices.size();
+    triangleInput.triangleArray.indexBuffer         = d_indices;
+    
+    uint32_t triangleInputFlags[1] = { 0 };
+    
+    // in this example we have one SBT entry, and no per-primitive
+    // materials:
+    triangleInput.triangleArray.flags               = triangleInputFlags;
+    triangleInput.triangleArray.numSbtRecords               = 1;
+    triangleInput.triangleArray.sbtIndexOffsetBuffer        = 0; 
+    triangleInput.triangleArray.sbtIndexOffsetSizeInBytes   = 0; 
+    triangleInput.triangleArray.sbtIndexOffsetStrideInBytes = 0; 
+
+    triangle_gas = buildGAS(triangleInput);
+  }
+
+  void Scene::buildSphereGAS() {
+    // ==================================================================
+    // sphere inputs
+    // ==================================================================
     std::vector<float> aabb = {-1.5f, -1.5f, -1.5f, 1.5f, 1.5f, 1.5f};
     aabbBuffer.alloc_and_copy_to_device(aabb);
     CUdeviceptr d_aabb_buffer = aabbBuffer.d_pointer();
@@ -284,15 +352,93 @@ namespace optix7tutorial {
     aabb_input.customPrimitiveArray.flags         = aabb_input_flags;
     aabb_input.customPrimitiveArray.numSbtRecords = 1;
 
+    sphere_gas = buildGAS(aabb_input);
+  }
+
+  OptixTraversableHandle Scene::buildIAS() {
+    OptixTraversableHandle asHandle {0};
+    std::vector<OptixInstance> instances;
+
+    OptixInstance instance = {};
+    float transform[12] = {1,0,0,0,
+                           0,1,0,0,
+                           0,0,1,0};
+    instance.instanceId = 0;
+    instance.visibilityMask = 255;
+    instance.sbtOffset = 0;
+    instance.flags = OPTIX_INSTANCE_FLAG_NONE;
+
+    {
+        memcpy(instance.transform, transform, sizeof(float)*12);
+        instance.traversableHandle = sphere_gas;
+        instances.push_back(instance);
+    }
+    {
+        memcpy(instance.transform, transform, sizeof(float)*12);
+        instance.traversableHandle = triangle_gas;
+        instances.push_back(instance);
+    }
+
+    cuBuffer instancesBuffer;
+    instancesBuffer.alloc_and_copy_to_device(instances);
+
+    // Instance build input.
+    OptixBuildInput buildInput = {};
+
+    buildInput.type                       = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
+    buildInput.instanceArray.instances    = instancesBuffer.d_pointer();
+    buildInput.instanceArray.numInstances = static_cast<unsigned int>( instances.size() );
+
+    OptixAccelBuildOptions accelBuildOptions = {};
+    accelBuildOptions.buildFlags             = OPTIX_BUILD_FLAG_NONE;
+    accelBuildOptions.operation              = OPTIX_BUILD_OPERATION_BUILD;
+
+    OptixAccelBufferSizes bufferSizesIAS;
+    OPTIX_CHECK( optixAccelComputeMemoryUsage( optixContext, &accelBuildOptions, &buildInput,
+                                               1,  // Number of build inputs
+                                               &bufferSizesIAS ) );
+
+
+    cuBuffer tempBuffer;
+    tempBuffer.alloc(bufferSizesIAS.tempSizeInBytes);
+    
+    cuBuffer outputBuffer;
+    outputBuffer.alloc(bufferSizesIAS.outputSizeInBytes);
+
+    OPTIX_CHECK( optixAccelBuild( optixContext,
+                                  0,  // CUDA stream
+                                  &accelBuildOptions,
+                                  &buildInput,
+                                  1,  // num build inputs
+                                  tempBuffer.d_pointer(),
+                                  tempBuffer.size_in_bytes,
+                                  outputBuffer.d_pointer(),
+                                  outputBuffer.size_in_bytes,
+                                  &asHandle,
+                                  nullptr,  // emitted property list
+                                  0 ) );    // num emitted properties
+
+    tempBuffer.free();
+    instancesBuffer.free();
+
+    return asHandle;
+  }
+
+  OptixTraversableHandle Scene::buildGAS(OptixBuildInput& build_input) {
+    OptixTraversableHandle asHandle {0};
+
+    OptixAccelBuildOptions accel_options = {};
+    accel_options.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
+    accel_options.operation  = OPTIX_BUILD_OPERATION_BUILD;
+
     // ==================================================================
     // BLAS setup
     // ==================================================================
-    
     OptixAccelBufferSizes blasBufferSizes;
     OPTIX_CHECK(optixAccelComputeMemoryUsage
                 (optixContext,
                  &accel_options,
-                 &aabb_input,
+                 &build_input,
                  1,  // num_build_inputs
                  &blasBufferSizes
                  ));
@@ -304,17 +450,6 @@ namespace optix7tutorial {
     cuBuffer compactedSizeBuffer;
     compactedSizeBuffer.alloc(sizeof(uint64_t));
 
-    //CUdeviceptr d_buffer_temp_output_gas_and_compacted_size;
-    //size_t      compactedSizeOffset = roundUp<size_t>( gas_buffer_sizes.outputSizeInBytes, 8ull );
-    //CUDA_CHECK( cudaMalloc(
-                //reinterpret_cast<void**>( &d_buffer_temp_output_gas_and_compacted_size ),
-                //compactedSizeOffset + 8
-                //) );
-
-    //OptixAccelEmitDesc emitProperty = {};
-    //emitProperty.type               = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
-    //emitProperty.result             = ( CUdeviceptr )( (char*)d_buffer_temp_output_gas_and_compacted_size + compactedSizeOffset );
-    
     OptixAccelEmitDesc emitDesc;
     emitDesc.type   = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
     emitDesc.result = compactedSizeBuffer.d_pointer();
@@ -332,7 +467,7 @@ namespace optix7tutorial {
     OPTIX_CHECK(optixAccelBuild(optixContext,
                                 /* stream */0,
                                 &accel_options,
-                                &aabb_input,
+                                &build_input,
                                 1,  
                                 tempBuffer.d_pointer(),
                                 tempBuffer.size_in_bytes,
