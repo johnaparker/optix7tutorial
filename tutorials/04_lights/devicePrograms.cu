@@ -78,6 +78,7 @@ namespace optix7tutorial {
                SURFACE_RAY_TYPE,             // missSBTIndex 
                u0, u1 );
 
+    color = clamp(color, 0, 1);
     const int3 rgb = make_int3(color.x*255, color.y*255, color.z*255);
     //const int3 rgb = make_int3(color.x*255.99f, color.y*255.99f, color.z*255.99f);
 
@@ -108,15 +109,13 @@ namespace optix7tutorial {
 
 
 extern "C" __global__ void __intersection__is() {
-    printf("intersection\n");
     auto* hg_data  = reinterpret_cast<HitGroupData*>( optixGetSbtDataPointer() );
     const float3 orig = optixGetObjectRayOrigin();
     const float3 dir  = optixGetObjectRayDirection();
 
     const float3 center = {0.f, 0.f, 0.f};
-    const float  radius = hg_data->radius;
+    const float  radius = hg_data->geometry.sphere.radius;
 
-    //printf("%f\n", radius);
     const float3 O      = orig - center;
     const float  l      = 1 / length( dir );
     const float3 D      = dir * l;
@@ -144,16 +143,61 @@ extern "C" __global__ void __intersection__is() {
 }
 
 extern "C" __global__ void __closesthit__sphere() {
+    auto* hg_data  = reinterpret_cast<HitGroupData*>( optixGetSbtDataPointer() );
+    const auto &camera = optixLaunchParams.camera;
+    const float ambient = hg_data->material.ambient;
+    const float diffuse = hg_data->material.diffuse;
+    const float specular = hg_data->material.specular;
+    const float shininess = hg_data->material.shininess;
+    const float radius = hg_data->geometry.sphere.radius;
+
     float3 &prd = *getPRD<float3>();
     float3 &att = *getARD<float3>();
-    prd = normalize( optixTransformNormalFromObjectToWorldSpace( att ) ) * 0.5f + 0.5f;
+    float3 normal = normalize( optixTransformNormalFromObjectToWorldSpace( att) );
+    float3 color = normal * 0.5f + 0.5f;
+
+    float3 lightPos = optixLaunchParams.lightPos;
+    float3 intersection = radius*normal;
+    float3 lightDir = normalize(lightPos - intersection);
+    float diffuseComp = diffuse*max(dot(normal, lightDir), 0.0f);
+
+    float3 viewDir = normalize(camera.position - intersection);
+    float3 reflectDir = reflect(-lightDir, normal);
+    float specularComp = specular*pow(max(dot(viewDir, reflectDir), 0.0f), shininess);
+
+    prd = (ambient + diffuseComp)*(color + specularComp);
 }
 
 extern "C" __global__ void __closesthit__triangle() {
+    auto* hg_data  = reinterpret_cast<HitGroupData*>( optixGetSbtDataPointer() );
+    const auto &camera = optixLaunchParams.camera;
+    const float ambient = hg_data->material.ambient;
+    const float diffuse = hg_data->material.diffuse;
+    const float specular = hg_data->material.specular;
+    const float shininess = hg_data->material.shininess;
+
+    const int   primID = optixGetPrimitiveIndex();
+    const int3  index  = hg_data->geometry.triangle_mesh.index[primID];
+    const float3* vertex = hg_data->geometry.triangle_mesh.vertex;
+    const float u = optixGetTriangleBarycentrics().x;
+    const float v = optixGetTriangleBarycentrics().y;
+
     float3 &prd = *getPRD<float3>();
-    prd = make_float3(0.f);
-    float2 coords = optixGetTriangleBarycentrics();
-    prd = make_float3(coords.x, coords.y, 1 - coords.x - coords.y);
+    float3 color = make_float3(.1,.5,.1);
+
+    float3 normal = make_float3(0,1,0);
+    float3 lightPos = optixLaunchParams.lightPos;
+    float3 intersection = (1 - u - v)*vertex[index.x] +
+                          u*vertex[index.y] +
+                          v*vertex[index.z];
+    float3 lightDir = normalize(lightPos - intersection);
+    float diffuseComp = diffuse*max(dot(normal, lightDir), 0.0f);
+
+    float3 viewDir = normalize(camera.position - intersection);
+    float3 reflectDir = reflect(-lightDir, normal);
+    float specularComp = specular*pow(max(dot(viewDir, reflectDir), 0.0f), shininess);
+
+    prd = (ambient + diffuseComp)*(color + specularComp);
 }
 
 }

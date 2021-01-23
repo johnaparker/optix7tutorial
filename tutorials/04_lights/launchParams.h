@@ -17,6 +17,7 @@ namespace optix7tutorial {
       float3 vertical;
     } camera;
 
+    float3 lightPos;
     OptixTraversableHandle traversable;
   };
 }

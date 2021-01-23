@@ -10,7 +10,33 @@ namespace optix7tutorial {
   struct MissData {};
   
   struct HitGroupData {
-      float radius;
+      enum Type {
+          SPHERE                = 0,
+          TRIANGLE_MESH         = 1,
+      };
+
+      struct Sphere {
+        float radius;
+      };
+
+      struct TriangleMesh {
+        float3* vertex;
+        int3* index;
+      };
+
+      union {
+          Sphere sphere;
+          TriangleMesh triangle_mesh;
+      } geometry;
+
+      Type  type;
+
+      struct Material {
+        float ambient = .2;
+        float diffuse = .8;
+        float specular = .1;
+        int shininess = 32;
+      } material; 
   };
 
   struct Camera {
@@ -74,7 +100,7 @@ namespace optix7tutorial {
 
     /*! build an acceleration structure for the given triangle mesh */
     OptixTraversableHandle buildIAS();
-    OptixTraversableHandle buildGAS(OptixBuildInput& build_input);
+    OptixTraversableHandle buildGAS(OptixBuildInput& build_input, cuBuffer& asBuffer);
     void buildSphereGAS();
     void buildTriangleGAS();
 
@@ -121,9 +147,6 @@ namespace optix7tutorial {
     /*! the camera we are to render with. */
     Camera lastSetCamera;
 
-    //! buffer that keeps the (final, compacted) accel structure
-    cuBuffer asBuffer;
-
     /*! the model we are going to trace rays against */
     cuBuffer aabbBuffer;
 
@@ -133,6 +156,13 @@ namespace optix7tutorial {
 
     OptixTraversableHandle sphere_gas;
     OptixTraversableHandle triangle_gas;
+
+    //! buffer that keeps the (final, compacted) accel structure
+    cuBuffer sphereSbtIndex;
+    cuBuffer triangleSbtIndex;
+    cuBuffer sphereBuffer;
+    cuBuffer triangleBuffer;
+    cuBuffer IASBuffer;
   };
 
 }

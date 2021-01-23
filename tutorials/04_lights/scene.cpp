@@ -29,11 +29,13 @@ namespace optix7tutorial {
 
     buildSphereGAS();
     buildTriangleGAS();
+    //launchParams.traversable = sphere_gas;
     launchParams.traversable = buildIAS();
 
     createPipeline();
     createSBT();
 
+    launchParams.lightPos = make_float3(0,5,3);
     launchParamsBuffer.alloc(sizeof(launchParams));
   }
 
@@ -272,13 +274,17 @@ namespace optix7tutorial {
     std::vector<HitGroupSbtRecord> hitgroupRecords;
     {
       HitGroupSbtRecord rec;
-      rec.data.radius = 1.5f;
+      rec.data.geometry.sphere.radius = 1.5f;
+      rec.data.material.specular = 0.3;
+      rec.data.type = HitGroupData::Type::SPHERE;
       OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[0],&rec));
       hitgroupRecords.push_back(rec);
     }
     {
       HitGroupSbtRecord rec;
-      rec.data.radius = 1.5f;
+      rec.data.geometry.triangle_mesh.index    = (int3*)indexBuffer.d_pointer();
+      rec.data.geometry.triangle_mesh.vertex   = (float3*)vertexBuffer.d_pointer();
+      rec.data.type = HitGroupData::Type::TRIANGLE_MESH;
       OPTIX_CHECK(optixSbtRecordPackHeader(hitgroupPGs[1],&rec));
       hitgroupRecords.push_back(rec);
     }
@@ -295,10 +301,13 @@ namespace optix7tutorial {
     // ==================================================================
     std::vector<float3> vertices;
     std::vector<int3> indices;
-    vertices.push_back(make_float3(-1,0,-2));
-    vertices.push_back(make_float3(1, 0,-2));
-    vertices.push_back(make_float3(0, 2,-2));
+    float W = 4.0;
+    vertices.push_back(make_float3(-W,-3,W));
+    vertices.push_back(make_float3(-W, -3,-W));
+    vertices.push_back(make_float3(W, -3,-W));
+    vertices.push_back(make_float3(W, -3,W));
     indices.push_back(make_int3(0,1,2));
+    indices.push_back(make_int3(0,2,3));
 
     vertexBuffer.alloc_and_copy_to_device(vertices);
     indexBuffer.alloc_and_copy_to_device(indices);
@@ -323,16 +332,17 @@ namespace optix7tutorial {
     triangleInput.triangleArray.indexBuffer         = d_indices;
     
     uint32_t triangleInputFlags[1] = { 0 };
+    triangleSbtIndex.alloc_and_copy_to_device(std::vector<uint32_t>{1,1});
     
     // in this example we have one SBT entry, and no per-primitive
     // materials:
     triangleInput.triangleArray.flags               = triangleInputFlags;
-    triangleInput.triangleArray.numSbtRecords               = 1;
-    triangleInput.triangleArray.sbtIndexOffsetBuffer        = 0; 
-    triangleInput.triangleArray.sbtIndexOffsetSizeInBytes   = 0; 
+    triangleInput.triangleArray.numSbtRecords               = 2;
+    triangleInput.triangleArray.sbtIndexOffsetBuffer        = triangleSbtIndex.d_pointer(); 
+    triangleInput.triangleArray.sbtIndexOffsetSizeInBytes   = sizeof( uint32_t ); 
     triangleInput.triangleArray.sbtIndexOffsetStrideInBytes = 0; 
 
-    triangle_gas = buildGAS(triangleInput);
+    triangle_gas = buildGAS(triangleInput, triangleBuffer);
   }
 
   void Scene::buildSphereGAS() {
@@ -348,32 +358,46 @@ namespace optix7tutorial {
     aabb_input.customPrimitiveArray.aabbBuffers   = &d_aabb_buffer;
     aabb_input.customPrimitiveArray.numPrimitives = 1;
 
+    sphereSbtIndex.alloc_and_copy_to_device(std::vector<uint32_t>{0});
+
     uint32_t aabb_input_flags[1]                  = {OPTIX_GEOMETRY_FLAG_NONE};
     aabb_input.customPrimitiveArray.flags         = aabb_input_flags;
-    aabb_input.customPrimitiveArray.numSbtRecords = 1;
+    aabb_input.customPrimitiveArray.numSbtRecords = 2;
+    aabb_input.customPrimitiveArray.sbtIndexOffsetBuffer         = sphereSbtIndex.d_pointer();
+    aabb_input.customPrimitiveArray.sbtIndexOffsetSizeInBytes    = sizeof( uint32_t );
+    aabb_input.customPrimitiveArray.sbtIndexOffsetStrideInBytes  = 0; 
+    aabb_input.customPrimitiveArray.primitiveIndexOffset         = 0;
 
-    sphere_gas = buildGAS(aabb_input);
+    sphere_gas = buildGAS(aabb_input, sphereBuffer);
   }
 
   OptixTraversableHandle Scene::buildIAS() {
     OptixTraversableHandle asHandle {0};
     std::vector<OptixInstance> instances;
 
-    OptixInstance instance = {};
-    float transform[12] = {1,0,0,0,
-                           0,1,0,0,
-                           0,0,1,0};
-    instance.instanceId = 0;
-    instance.visibilityMask = 255;
-    instance.sbtOffset = 0;
-    instance.flags = OPTIX_INSTANCE_FLAG_NONE;
-
     {
+
+        OptixInstance instance = {};
+        float transform[12] = {1,0,0,0,
+                               0,1,0,0,
+                               0,0,1,0};
+        instance.instanceId = 0;
+        instance.visibilityMask = 255;
+        instance.sbtOffset = 0;
+        instance.flags = OPTIX_INSTANCE_FLAG_NONE;
         memcpy(instance.transform, transform, sizeof(float)*12);
         instance.traversableHandle = sphere_gas;
         instances.push_back(instance);
     }
     {
+        OptixInstance instance = {};
+        float transform[12] = {1,0,0,0,
+                               0,1,0,0,
+                               0,0,1,0};
+        instance.instanceId = 0;
+        instance.visibilityMask = 255;
+        instance.sbtOffset = 0;
+        instance.flags = OPTIX_INSTANCE_FLAG_NONE;
         memcpy(instance.transform, transform, sizeof(float)*12);
         instance.traversableHandle = triangle_gas;
         instances.push_back(instance);
@@ -401,9 +425,7 @@ namespace optix7tutorial {
 
     cuBuffer tempBuffer;
     tempBuffer.alloc(bufferSizesIAS.tempSizeInBytes);
-    
-    cuBuffer outputBuffer;
-    outputBuffer.alloc(bufferSizesIAS.outputSizeInBytes);
+    IASBuffer.alloc(bufferSizesIAS.outputSizeInBytes);
 
     OPTIX_CHECK( optixAccelBuild( optixContext,
                                   0,  // CUDA stream
@@ -412,8 +434,8 @@ namespace optix7tutorial {
                                   1,  // num build inputs
                                   tempBuffer.d_pointer(),
                                   tempBuffer.size_in_bytes,
-                                  outputBuffer.d_pointer(),
-                                  outputBuffer.size_in_bytes,
+                                  IASBuffer.d_pointer(),
+                                  IASBuffer.size_in_bytes,
                                   &asHandle,
                                   nullptr,  // emitted property list
                                   0 ) );    // num emitted properties
@@ -424,7 +446,7 @@ namespace optix7tutorial {
     return asHandle;
   }
 
-  OptixTraversableHandle Scene::buildGAS(OptixBuildInput& build_input) {
+  OptixTraversableHandle Scene::buildGAS(OptixBuildInput& build_input, cuBuffer& asBuffer) {
     OptixTraversableHandle asHandle {0};
 
     OptixAccelBuildOptions accel_options = {};
