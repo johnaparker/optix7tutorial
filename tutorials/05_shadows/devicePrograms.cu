@@ -9,8 +9,6 @@ namespace optix7tutorial {
   extern "C" __constant__ LaunchParams optixLaunchParams;
 
   // for this simple example, we have a single ray type
-  enum { SURFACE_RAY_TYPE=0, RAY_TYPE_COUNT };
-  
   static __forceinline__ __device__
   void *unpackPointer( uint32_t i0, uint32_t i1 ) {
     const uint64_t uptr = static_cast<uint64_t>( i0 ) << 32 | i1;
@@ -40,6 +38,8 @@ namespace optix7tutorial {
   }
   
   extern "C" __global__ void __anyhit__radiance() {}
+  extern "C" __global__ void __anyhit__shadow() {}
+  extern "C" __global__ void __closesthit__shadow() {}
 
   extern "C" __global__ void __raygen__renderFrame() {
     // compute a test pattern based on pixel ID
@@ -73,9 +73,9 @@ namespace optix7tutorial {
                0.0f,   // rayTime
                OptixVisibilityMask( 255 ),
                OPTIX_RAY_FLAG_DISABLE_ANYHIT,//OPTIX_RAY_FLAG_NONE,
-               SURFACE_RAY_TYPE,             // SBT offset
+               RAY_TYPE_RADIANCE,             // SBT offset
                RAY_TYPE_COUNT,               // SBT stride
-               SURFACE_RAY_TYPE,             // missSBTIndex 
+               RAY_TYPE_RADIANCE,             // missSBTIndex 
                u0, u1 );
 
     color = clamp(make_float3(sqrt(color.x), sqrt(color.y), sqrt(color.z)), 0, 1);
@@ -165,7 +165,25 @@ extern "C" __global__ void __closesthit__sphere() {
     float3 reflectDir = reflect(-lightDir, normal);
     float specularComp = specular*pow(max(dot(viewDir, reflectDir), 0.0f), shininess);
 
-    prd = (ambient + diffuseComp)*(color + specularComp);
+    float3 lightVisibility = make_float3(0);
+    uint32_t u0, u1;
+    packPointer( &lightVisibility, u0, u1 );
+    optixTrace(optixLaunchParams.traversable,
+               intersection,
+               lightPos - intersection,
+               1e-3f,      // tmin
+               1e20f,  // tmax
+               0.0f,       // rayTime
+               OptixVisibilityMask( 255 ),
+               OPTIX_RAY_FLAG_DISABLE_ANYHIT
+               | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT
+               | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
+               RAY_TYPE_OCCLUSION,           // SBT offset
+               RAY_TYPE_COUNT,               // SBT stride
+               RAY_TYPE_OCCLUSION,           // missSBTIndex 
+               u0, u1 );
+
+    prd = (ambient + lightVisibility*diffuseComp)*(color + lightVisibility*specularComp);
 }
 
 extern "C" __global__ void __closesthit__triangle() {
@@ -197,7 +215,31 @@ extern "C" __global__ void __closesthit__triangle() {
     float3 reflectDir = reflect(-lightDir, normal);
     float specularComp = specular*pow(max(dot(viewDir, reflectDir), 0.0f), shininess);
 
-    prd = (ambient + diffuseComp)*(color + specularComp);
+    float3 lightVisibility = make_float3(0);
+    uint32_t u0, u1;
+    packPointer( &lightVisibility, u0, u1 );
+    optixTrace(optixLaunchParams.traversable,
+               intersection,
+               lightPos - intersection,
+               1e-3f,      // tmin
+               1e20f,  // tmax
+               0.0f,       // rayTime
+               OptixVisibilityMask( 255 ),
+               OPTIX_RAY_FLAG_DISABLE_ANYHIT
+               | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT
+               | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
+               RAY_TYPE_OCCLUSION,           // SBT offset
+               RAY_TYPE_COUNT,               // SBT stride
+               RAY_TYPE_OCCLUSION,           // missSBTIndex 
+               u0, u1 );
+
+    prd = (ambient + lightVisibility*diffuseComp)*(color + lightVisibility*specularComp);
 }
+
+extern "C" __global__ void __miss__shadow() {
+    float3 &prd = *getPRD<float3>();
+    prd = make_float3(1.f);
+}
+
 
 }
